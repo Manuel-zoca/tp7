@@ -11,16 +11,14 @@ async function schedulePromotions(sock, groupIds) {
     // Limitar para no máximo 4 grupos
     const targetGroups = groupIds.slice(0, 4);
 
-    // ⏰ Definir horários de execução (4x ao dia) - formato: minuto hora * * *
-// ⏰ Definir horários de execução (3x ao dia) - formato: minuto hora * * *
-const cronTimes = [
-    "32 6 * * *",   // 06:32
-    "32 15 * * *",  // 15:32
-    "32 20 * * *",  // 20:32
-];
+    // ⏰ Definir horários de execução (3x ao dia) - formato: minuto hora * * *
+    const cronTimes = [
+        "32 6 * * *",   // 06:32
+        "32 15 * * *",  // 15:32
+        "32 20 * * *",  // 20:32
+    ];
 
-
-    // Função auxiliar para esperar
+    // Função auxiliar para esperar (delay)
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     cronTimes.forEach(cronTime => {
@@ -51,7 +49,7 @@ const cronTimes = [
                             image: fs.readFileSync(tabelaImg),
                             caption: "📊 *Tabela Completa de Pacotes Atualizada!*"
                         });
-                        await sleep(5000);
+                        await sleep(10000); // ⏳ Espera 10 segundos antes da próxima mensagem
                     }
 
                     // 2️⃣ Envia plano Ilimitado
@@ -61,7 +59,7 @@ const cronTimes = [
                             image: fs.readFileSync(ilimitadoImg),
                             caption: legendaIlimitado
                         });
-                        await sleep(5000);
+                        await sleep(10000); // ⏳ Espera 10 segundos
                     }
 
                     // 3️⃣ Envia promoção Netflix
@@ -70,7 +68,7 @@ const cronTimes = [
                             image: fs.readFileSync(netflixImg),
                             caption: "🎬 *Promoção Netflix Ativada!*"
                         });
-                        await sleep(5000);
+                        await sleep(10000); // ⏳ Espera 10 segundos
                     }
 
                     // 4️⃣ Envia formas de pagamento
@@ -89,7 +87,7 @@ const cronTimes = [
 
 Após efetuar o pagamento, por favor, envie o comprovante da transferência juntamente com seu contato.`;
                     await sock.sendMessage(groupId, { text: formasPagamento });
-                    await sleep(4000);
+                    await sleep(10000); // ⏳ Espera 10 segundos
 
                     // 5️⃣ Envia link + menção a todos
                     const linkMsg = `🌐 *Acesse nosso site:* https://topai-net-gigas.netlify.app/      
@@ -108,9 +106,9 @@ Após efetuar o pagamento, por favor, envie o comprovante da transferência junt
                     console.error(`❌ Erro ao enviar promoções para ${groupId}:`, err.message);
                 }
 
-                // Espera 60 segundos antes de passar para o próximo grupo
-                console.log(`[PROMO] ⏳ Aguardando 60s antes de enviar para o próximo grupo...`);
-                await sleep(60000);
+                // Espera 90 segundos antes de passar para o próximo grupo
+                console.log(`[PROMO] ⏳ Aguardando 90s antes de enviar para o próximo grupo...`);
+                await sleep(90000);
             }
 
             console.log(`[PROMO SCHEDULER] ✅ Ciclo de disparos concluído às ${now} (Horário de Moçambique)`);
