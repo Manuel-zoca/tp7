@@ -33,8 +33,6 @@ const { handleGrupoGatekeeper, scheduleGroupAutomation } = require("./handlers/g
 const { schedulePromotions } = require("./handlers/schedulePromotions");
 const { handleButtonTest, handleButtonResponse } = require("./handlers/buttonTestHandler");
 
-// Observação: removidos os handlers relacionados a verificação de comprovativos/pix conforme solicitado
-
 // ===================== Supabase =====================
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const BUCKET = process.env.BUCKET_NAME || "whatsapp-auth";
@@ -46,6 +44,7 @@ const ALLOWED_GROUPS = [
   "120363252308434038@g.us",
   "120363393526547408@g.us",
   "120363280798975952@g.us",
+  "120363415196759300@g.us", // ✅ Novo grupo adicionado
 ];
 
 // Grupos para envio de promoções (até 4)
@@ -179,16 +178,11 @@ async function iniciarBot(deviceName, authFolder) {
 
         if (ALLOWED_GROUPS.length > 0) {
           scheduleGroupAutomation(sock, ALLOWED_GROUPS);
-        } else {
-          console.log("ℹ️ Nenhum grupo autorizado definido em ALLOWED_GROUPS. Automação desativada.");
         }
 
-        // Iniciar agendador de promoções
         if (GRUPOS_PROMO.length > 0) {
           console.log(`🚀 Iniciando agendador de promoções para ${GRUPOS_PROMO.length} grupo(s)...`);
           schedulePromotions(sock, GRUPOS_PROMO);
-        } else {
-          console.log("ℹ️ Nenhum grupo definido em GRUPOS_PROMO. Promoções automáticas desativadas.");
         }
 
       } catch (err) {
@@ -213,6 +207,14 @@ async function iniciarBot(deviceName, authFolder) {
     processedMessages.add(msgId);
 
     const senderJid = msg.key.remoteJid;
+
+    // ✅ NOVO: Ignorar mensagens de grupos não autorizados
+    if (senderJid.endsWith("@g.us") && 
+        !ALLOWED_GROUPS.includes(senderJid) && 
+        !GRUPOS_PROMO.includes(senderJid)) {
+      return; // 🚫 Ignora completamente grupos não autorizados
+    }
+
     let messageText = (
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
@@ -224,23 +226,19 @@ async function iniciarBot(deviceName, authFolder) {
     console.log(`💬 Nova mensagem de ${senderJid}: "${messageText}"`);
 
     try { 
-      // Anti-link (mantido)
       await handleAntiLinkMessage(sock, msg); 
     } catch (err) { 
       console.error("❌ AntiLink:", err.message); 
     }
 
-    // Verifica se é resposta de botão (DEVE VIR ANTES DOS OUTROS HANDLERS)
     if (msg.message?.buttonsResponseMessage) {
       await handleButtonResponse(sock, msg);
-      return; // Não processa mais nada se for resposta de botão
+      return;
     }
 
     try {
-      // ✅ Mantido: handler de botão para exibir menu
       await handleButtonTest(sock, msg);
 
-      // Comando central: mantém a estrutura para aceitar comandos básicos
       if (lowerText.startsWith(".compra")) await handleCompra2(sock, msg);
       else if (lowerText === "@concorrentes") await handleListar(sock, msg);
       else if (lowerText.startsWith("@remove") || lowerText.startsWith("/remove")) await handleRemove(sock, msg);
@@ -278,6 +276,8 @@ async function iniciarBot(deviceName, authFolder) {
 
   // ===================== Boas-vindas =====================
   sock.ev.on("group-participants.update", async ({ id, participants, action }) => {
+    if (!ALLOWED_GROUPS.includes(id)) return; // ✅ Ignora se o grupo não for autorizado
+
     if (action === "add") {
       for (let participant of participants) {
         const nome = participant.split("@")[0];
