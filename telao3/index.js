@@ -45,6 +45,7 @@ const ALLOWED_GROUPS = [
   "120363393526547408@g.us",
   "120363280798975952@g.us",
   "120363415196759300@g.us", // ✅ Novo grupo adicionado
+  "120363418676894598@g.us", // ✅ Novo grupo adicionado
 ];
 
 // Grupos para envio de promoções (até 4)
@@ -53,6 +54,7 @@ const GRUPOS_PROMO = [
   "120363252308434038@g.us",
   "120363393526547408@g.us",
   "120363280798975952@g.us",
+  "120363418676894598@g.us",
 ];
 
 // ===================== Controle de mensagens =====================
@@ -306,3 +308,4 @@ iniciarBot("Dispositivo 1", AUTH_FOLDER);
 const PORT = process.env.PORT || 3000;
 app.get("/", (_, res) => res.send("✅ TopBot rodando com sucesso!"));
 app.listen(PORT, () => console.log(`🌐 Servidor HTTP ativo na porta ${PORT}`));
+
