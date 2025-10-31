@@ -36,7 +36,7 @@ const { handleButtonTest, handleButtonResponse } = require("./handlers/buttonTes
 // ===================== Supabase =====================
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const BUCKET = process.env.BUCKET_NAME || "whatsapp-auth";
-const AUTH_FOLDER = "./auth1";
+const AUTH_FOLDER = process.env.AUTH_FOLDER || "./auth1";
 
 // ===================== Grupos Autorizados =====================
 const ALLOWED_GROUPS = [
@@ -44,11 +44,10 @@ const ALLOWED_GROUPS = [
   "120363252308434038@g.us",
   "120363393526547408@g.us",
   "120363280798975952@g.us",
-  "120363415196759300@g.us", // ✅ Novo grupo adicionado
-  "120363418676894598@g.us", // ✅ Novo grupo adicionado
+  "120363415196759300@g.us",
+  "120363418676894598@g.us",
 ];
 
-// Grupos para envio de promoções (até 4)
 const GRUPOS_PROMO = [ 
   "120363281867895477@g.us",
   "120363252308434038@g.us",
@@ -61,72 +60,116 @@ const GRUPOS_PROMO = [
 let pendingMessages = [];
 const processedMessages = new Set();
 
+// Simple guard to avoid multiple simultaneous bot instances
+let currentSock = null;
+let restarting = false;
+
 // ===================== Sincronização com Supabase =====================
 async function syncAuthFromSupabase() {
-  if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER);
+  if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER, { recursive: true });
 
-  const { data, error } = await supabase.storage.from(BUCKET).list("", { limit: 100 });
-  if (error) {
-    console.error("❌ Erro ao listar Supabase:", error.message);
-    return;
-  }
-
-  for (const file of data) {
-    try {
-      const { data: fileData, error: downloadErr } = await supabase.storage.from(BUCKET).download(file.name);
-      if (downloadErr) throw downloadErr;
-
-      const buffer = Buffer.from(await fileData.arrayBuffer());
-      fs.writeFileSync(path.join(AUTH_FOLDER, file.name), buffer);
-    } catch (err) {
-      console.error("❌ Erro ao baixar", file.name, ":", err.message);
+  try {
+    const { data, error } = await supabase.storage.from(BUCKET).list("", { limit: 100 });
+    if (error) {
+      console.error("❌ Erro ao listar Supabase:", error.message || error);
+      return;
     }
+
+    for (const file of data) {
+      try {
+        const { data: fileData, error: downloadErr } = await supabase.storage.from(BUCKET).download(file.name);
+        if (downloadErr) throw downloadErr;
+
+        const buffer = Buffer.from(await fileData.arrayBuffer());
+        fs.writeFileSync(path.join(AUTH_FOLDER, file.name), buffer);
+      } catch (err) {
+        console.error("❌ Erro ao baixar", file.name, ":", err.message || err);
+      }
+    }
+    console.log("✅ Sessão carregada do Supabase para local.");
+  } catch (err) {
+    console.error("❌ Falha ao sincronizar do Supabase:", err.message || err);
   }
-  console.log("✅ Sessão carregada do Supabase para local.");
 }
 
 let syncTimeout;
 async function syncAuthToSupabase() {
   clearTimeout(syncTimeout);
   syncTimeout = setTimeout(async () => {
-    if (!fs.existsSync(AUTH_FOLDER)) return;
+    try {
+      if (!fs.existsSync(AUTH_FOLDER)) return;
 
-    const files = fs.readdirSync(AUTH_FOLDER);
-    let enviados = 0;
-    for (const file of files) {
-      try {
-        const filePath = path.join(AUTH_FOLDER, file);
-        if (!fs.existsSync(filePath)) continue;
-        const content = fs.readFileSync(filePath);
-        await supabase.storage.from(BUCKET).upload(file, content, { upsert: true });
-        enviados++;
-      } catch (err) {
-        console.error("❌ Erro ao enviar", file, ":", err.message);
+      const files = fs.readdirSync(AUTH_FOLDER);
+      let enviados = 0;
+      for (const file of files) {
+        try {
+          const filePath = path.join(AUTH_FOLDER, file);
+          if (!fs.existsSync(filePath)) continue;
+          const content = fs.readFileSync(filePath);
+          await supabase.storage.from(BUCKET).upload(file, content, { upsert: true });
+          enviados++;
+        } catch (err) {
+          console.error("❌ Erro ao enviar", file, ":", err.message || err);
+        }
       }
-    }
-    if (enviados > 0) {
-      console.log(`☁️ Sessão sincronizada: ${enviados} arquivo(s) enviados ao Supabase.`);
+      if (enviados > 0) {
+        console.log(`☁️ Sessão sincronizada: ${enviados} arquivo(s) enviados ao Supabase.`);
+      }
+    } catch (err) {
+      console.error("❌ Falha ao sincronizar para Supabase:", err.message || err);
     }
   }, 3000);
 }
 
+// Periodically push auth to Supabase every 5 minutes (prevents data loss on unexpected exit)
+setInterval(() => {
+  syncAuthToSupabase().catch(e => console.error('Interval sync error', e));
+}, 5 * 60 * 1000);
+
+// ===================== Helpers =====================
+function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+// Exponential backoff reconnect manager
+async function safeRestart(deviceName, authFolder, attempt = 1) {
+  if (restarting) return;
+  restarting = true;
+  const waitMs = Math.min(60_000, 1000 * Math.pow(2, Math.min(attempt, 6)));
+  console.log(`🔁 Reiniciando em ${waitMs}ms (tentativa ${attempt})...`);
+  await delay(waitMs);
+
+  try {
+    if (currentSock && currentSock.end) {
+      try { currentSock.end(); } catch (e) { /* ignore */ }
+    }
+  } catch (err) { }
+
+  restarting = false;
+  iniciarBot(deviceName, authFolder, attempt + 1).catch(err => {
+    console.error('❌ Falha ao reiniciar bot:', err?.message || err);
+  });
+}
+
 // ===================== Bot =====================
-async function iniciarBot(deviceName, authFolder) {
-  console.log(`🟢 Iniciando o bot para o dispositivo: ${deviceName}...`);
+async function iniciarBot(deviceName, authFolder, attempt = 1) {
+  console.log(`🟢 Iniciando o bot para o dispositivo: ${deviceName} (attempt ${attempt})...`);
 
   await syncAuthFromSupabase();
 
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
 
+  // create socket
   const sock = makeWASocket({
     version,
     auth: state,
     printQRInTerminal: false,
-    qrTimeout: 60_000,
+    qrTimeout: 120_000,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 30_000,
   });
+
+  // set current socket reference so outside code can close it on reconnect
+  currentSock = sock;
 
   // Reenviar mensagens pendentes
   const processPendingMessages = async () => {
@@ -135,7 +178,7 @@ async function iniciarBot(deviceName, authFolder) {
         await sock.sendMessage(jid, msg); 
         console.log(`📤 Mensagem pendente reenviada para ${jid}`);
       } catch (e) { 
-        console.error("❌ Falha ao reenviar mensagem pendente:", e.message); 
+        console.error("❌ Falha ao reenviar mensagem pendente:", e.message || e); 
       }
     }
     pendingMessages = [];
@@ -149,23 +192,36 @@ async function iniciarBot(deviceName, authFolder) {
       try {
         const qrBase64 = await QRCode.toDataURL(qr);
         console.log(`📌 Escaneie o QR Code do dispositivo: ${deviceName}`);
+        // print only base64 payload so external UIs can use it
         console.log(qrBase64.split(",")[1]);
       } catch (err) {
-        console.error("❌ Erro ao gerar QR Code base64:", err);
+        console.error("❌ Erro ao gerar QR Code base64:", err.message || err);
       }
     }
 
-    if (connection === "close") {
-      const motivo = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      console.error(`⚠️ Conexão fechada: ${motivo}`);
+    console.log('🔔 connection.update:', connection);
 
-      if (motivo === DisconnectReason.loggedOut) {
-        console.log("❌ Bot deslogado. Encerrando...");
-        process.exit(0);
+    if (connection === "close") {
+      const reason = lastDisconnect?.error;
+      const statusCode = reason ? (new Boom(reason)?.output?.statusCode) : undefined;
+      console.error(`⚠️ Conexão fechada. statusCode=${statusCode} reason=${reason?.message || reason}`);
+
+      // If logged out, try to remove local auth and re-sync from Supabase once
+      if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+        console.log("❌ Bot deslogado. Removendo credenciais locais e forçando re-login...");
+        try {
+          // remove local auth files to force new QR
+          if (fs.existsSync(authFolder)) fs.rmSync(authFolder, { recursive: true, force: true });
+        } catch (err) { console.error('Erro ao remover auth local:', err); }
+
+        // try again with backoff
+        await safeRestart(deviceName, authFolder, attempt);
+        return;
       }
 
-      console.log("🔄 Tentando reconectar...");
-      setTimeout(() => iniciarBot(deviceName, authFolder), 3000);
+      // Other reasons -> attempt reconnection with backoff
+      await safeRestart(deviceName, authFolder, attempt);
+
     } else if (connection === "open") {
       console.log(`✅ Bot conectado no dispositivo: ${deviceName}`);
       await processPendingMessages();
@@ -188,14 +244,18 @@ async function iniciarBot(deviceName, authFolder) {
         }
 
       } catch (err) {
-        console.error("❌ Não foi possível carregar a lista de grupos:", err.message);
+        console.error("❌ Não foi possível carregar a lista de grupos:", err.message || err);
       }
     }
   });
 
   sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    await syncAuthToSupabase();
+    try {
+      await saveCreds();
+      await syncAuthToSupabase();
+    } catch (err) {
+      console.error('❌ Erro ao salvar credenciais:', err?.message || err);
+    }
   });
 
   // ===================== Mensagens recebidas =====================
@@ -207,6 +267,14 @@ async function iniciarBot(deviceName, authFolder) {
     const msgId = msg.key.id;
     if (processedMessages.has(msgId)) return;
     processedMessages.add(msgId);
+
+    // prevent memory leak: keep processedMessages size bounded
+    if (processedMessages.size > 10000) {
+      // remove oldest entries by recreating set from tail
+      const arr = Array.from(processedMessages).slice(-5000);
+      processedMessages.clear();
+      arr.forEach(i => processedMessages.add(i));
+    }
 
     const senderJid = msg.key.remoteJid;
 
@@ -230,7 +298,7 @@ async function iniciarBot(deviceName, authFolder) {
     try { 
       await handleAntiLinkMessage(sock, msg); 
     } catch (err) { 
-      console.error("❌ AntiLink:", err.message); 
+      console.error("❌ AntiLink:", err.message || err); 
     }
 
     if (msg.message?.buttonsResponseMessage) {
@@ -260,7 +328,7 @@ async function iniciarBot(deviceName, authFolder) {
         await handleTabela(sock, msg);
 
     } catch (err) {
-      console.error("❌ Erro ao processar mensagem:", err.message);
+      console.error("❌ Erro ao processar mensagem:", err.message || err);
       pendingMessages.push({ jid: senderJid, msg: { text: "❌ Ocorreu um erro ao processar sua solicitação." } });
     }
   });
@@ -271,7 +339,7 @@ async function iniciarBot(deviceName, authFolder) {
       try {
         await handleReaction({ reactionMessage: reactionMsg, sock });
       } catch (err) {
-        console.error("❌ Erro ao processar reação:", err.message);
+        console.error("❌ Erro ao processar reação:", err.message || err);
       }
     }
   });
@@ -293,19 +361,29 @@ async function iniciarBot(deviceName, authFolder) {
             await sock.sendMessage(id, { text: mensagem, mentions: [participant] });
           }
         } catch (err) {
-          console.error("❌ Erro ao enviar boas-vindas:", err.message);
+          console.error("❌ Erro ao enviar boas-vindas:", err.message || err);
         }
       }
     }
   });
 
+  // return socket so caller can use it
   return sock;
 }
 
+// ===================== Safe global error handlers (avoid process exit)
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
 // ===================== Inicialização =====================
-iniciarBot("Dispositivo 1", AUTH_FOLDER);
+iniciarBot("Dispositivo 1", AUTH_FOLDER).catch(err => {
+  console.error('❌ Falha ao iniciar bot:', err?.message || err);
+});
 
 const PORT = process.env.PORT || 3000;
 app.get("/", (_, res) => res.send("✅ TopBot rodando com sucesso!"));
 app.listen(PORT, () => console.log(`🌐 Servidor HTTP ativo na porta ${PORT}`));
-
