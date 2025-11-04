@@ -10,6 +10,7 @@ const { Boom } = require("@hapi/boom");
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const fetch = require("node-fetch");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -121,7 +122,7 @@ async function syncAuthToSupabase() {
   }, 3000);
 }
 
-// Periodically push auth to Supabase every 5 minutes (prevents data loss on unexpected exit)
+// Periodically push auth to Supabase every 5 minutes
 setInterval(() => {
   syncAuthToSupabase().catch(e => console.error('Interval sync error', e));
 }, 5 * 60 * 1000);
@@ -144,9 +145,13 @@ async function safeRestart(deviceName, authFolder, attempt = 1) {
   } catch (err) { }
 
   restarting = false;
-  iniciarBot(deviceName, authFolder, attempt + 1).catch(err => {
+  try {
+    await iniciarBot(deviceName, authFolder, attempt + 1);
+  } catch (err) {
     console.error('❌ Falha ao reiniciar bot:', err?.message || err);
-  });
+    // tenta novamente após 1 min se falhar
+    setTimeout(() => safeRestart(deviceName, authFolder, attempt + 1), 60_000);
+  }
 }
 
 // ===================== Bot =====================
@@ -158,7 +163,6 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
 
-  // create socket
   const sock = makeWASocket({
     version,
     auth: state,
@@ -168,10 +172,8 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     keepAliveIntervalMs: 30_000,
   });
 
-  // set current socket reference so outside code can close it on reconnect
   currentSock = sock;
 
-  // Reenviar mensagens pendentes
   const processPendingMessages = async () => {
     for (const { jid, msg } of pendingMessages) {
       try { 
@@ -184,7 +186,6 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     pendingMessages = [];
   };
 
-  // Eventos de conexão
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -192,34 +193,27 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
       try {
         const qrBase64 = await QRCode.toDataURL(qr);
         console.log(`📌 Escaneie o QR Code do dispositivo: ${deviceName}`);
-        // print only base64 payload so external UIs can use it
         console.log(qrBase64.split(",")[1]);
       } catch (err) {
         console.error("❌ Erro ao gerar QR Code base64:", err.message || err);
       }
     }
 
-    console.log('🔔 connection.update:', connection);
-
     if (connection === "close") {
       const reason = lastDisconnect?.error;
       const statusCode = reason ? (new Boom(reason)?.output?.statusCode) : undefined;
       console.error(`⚠️ Conexão fechada. statusCode=${statusCode} reason=${reason?.message || reason}`);
 
-      // If logged out, try to remove local auth and re-sync from Supabase once
       if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
         console.log("❌ Bot deslogado. Removendo credenciais locais e forçando re-login...");
         try {
-          // remove local auth files to force new QR
           if (fs.existsSync(authFolder)) fs.rmSync(authFolder, { recursive: true, force: true });
         } catch (err) { console.error('Erro ao remover auth local:', err); }
 
-        // try again with backoff
         await safeRestart(deviceName, authFolder, attempt);
         return;
       }
 
-      // Other reasons -> attempt reconnection with backoff
       await safeRestart(deviceName, authFolder, attempt);
 
     } else if (connection === "open") {
@@ -228,18 +222,14 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
 
       try {
         const groups = await sock.groupFetchAllParticipating();
-        console.log("\n📋 GRUPOS ATUAIS (copie os IDs para ALLOWED_GROUPS ou GRUPOS_PROMO):");
+        console.log("\n📋 GRUPOS ATUAIS:");
         Object.values(groups).forEach(g => {
           console.log(`   🆔 ${g.id} — ${g.subject}`);
         });
-        console.log("");
 
-        if (ALLOWED_GROUPS.length > 0) {
-          scheduleGroupAutomation(sock, ALLOWED_GROUPS);
-        }
-
+        if (ALLOWED_GROUPS.length > 0) scheduleGroupAutomation(sock, ALLOWED_GROUPS);
         if (GRUPOS_PROMO.length > 0) {
-          console.log(`🚀 Iniciando agendador de promoções para ${GRUPOS_PROMO.length} grupo(s)...`);
+          console.log(`🚀 Iniciando agendador de promoções...`);
           schedulePromotions(sock, GRUPOS_PROMO);
         }
 
@@ -258,7 +248,6 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     }
   });
 
-  // ===================== Mensagens recebidas =====================
   sock.ev.on("messages.upsert", async ({ messages }) => {
     if (!messages || !messages.length) return;
     const msg = messages[0];
@@ -267,23 +256,16 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     const msgId = msg.key.id;
     if (processedMessages.has(msgId)) return;
     processedMessages.add(msgId);
-
-    // prevent memory leak: keep processedMessages size bounded
     if (processedMessages.size > 10000) {
-      // remove oldest entries by recreating set from tail
       const arr = Array.from(processedMessages).slice(-5000);
       processedMessages.clear();
       arr.forEach(i => processedMessages.add(i));
     }
 
     const senderJid = msg.key.remoteJid;
-
-    // ✅ NOVO: Ignorar mensagens de grupos não autorizados
     if (senderJid.endsWith("@g.us") && 
         !ALLOWED_GROUPS.includes(senderJid) && 
-        !GRUPOS_PROMO.includes(senderJid)) {
-      return; // 🚫 Ignora completamente grupos não autorizados
-    }
+        !GRUPOS_PROMO.includes(senderJid)) return;
 
     let messageText = (
       msg.message?.conversation ||
@@ -295,11 +277,8 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
 
     console.log(`💬 Nova mensagem de ${senderJid}: "${messageText}"`);
 
-    try { 
-      await handleAntiLinkMessage(sock, msg); 
-    } catch (err) { 
-      console.error("❌ AntiLink:", err.message || err); 
-    }
+    try { await handleAntiLinkMessage(sock, msg); } 
+    catch (err) { console.error("❌ AntiLink:", err.message || err); }
 
     if (msg.message?.buttonsResponseMessage) {
       await handleButtonResponse(sock, msg);
@@ -333,7 +312,6 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     }
   });
 
-  // ===================== Reações =====================
   sock.ev.on("messages.reaction", async reactions => {
     for (const reactionMsg of reactions) {
       try {
@@ -344,9 +322,8 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     }
   });
 
-  // ===================== Boas-vindas =====================
   sock.ev.on("group-participants.update", async ({ id, participants, action }) => {
-    if (!ALLOWED_GROUPS.includes(id)) return; // ✅ Ignora se o grupo não for autorizado
+    if (!ALLOWED_GROUPS.includes(id)) return;
 
     if (action === "add") {
       for (let participant of participants) {
@@ -367,11 +344,10 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     }
   });
 
-  // return socket so caller can use it
   return sock;
 }
 
-// ===================== Safe global error handlers (avoid process exit)
+// ===================== Global Error Handlers =====================
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
 });
@@ -387,3 +363,22 @@ iniciarBot("Dispositivo 1", AUTH_FOLDER).catch(err => {
 const PORT = process.env.PORT || 3000;
 app.get("/", (_, res) => res.send("✅ TopBot rodando com sucesso!"));
 app.listen(PORT, () => console.log(`🌐 Servidor HTTP ativo na porta ${PORT}`));
+
+// ===================== 🔁 REFORTALECIMENTO CONTÍNUO =====================
+
+// Auto-ping interno
+setInterval(() => {
+  fetch(`http://localhost:${PORT}`).catch(() => {});
+}, 4 * 60 * 1000); // 4 minutos
+
+// Watchdog de conexão
+setInterval(async () => {
+  if (!currentSock?.ws || currentSock?.ws?.readyState !== 1) {
+    console.log("⚠️ Socket parece desconectado. Tentando reiniciar...");
+    await safeRestart("Dispositivo 1", AUTH_FOLDER);
+  }
+}, 5 * 60 * 1000);
+
+// Bloqueio de encerramento acidental
+process.on("SIGINT", () => console.log("🛑 Interceptado Ctrl+C, ignorando encerramento."));
+process.on("SIGTERM", () => console.log("🛑 Sinal de encerramento ignorado."));
