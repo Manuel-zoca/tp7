@@ -15,7 +15,7 @@ const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
-// ===================== Handlers (mantidos) =====================
+// ===================== Handlers =====================
 const { handleMessage } = require("./handlers/messageHandler");
 const { handleConcorrer } = require("./handlers/concorrerHandler");
 const { handleListar } = require("./handlers/listarHandler");
@@ -30,7 +30,7 @@ const { handleAntiLinkMessage } = require("./handlers/antiLink");
 const { handleCompra2 } = require("./handlers/compra2Handler");
 const { handleGrupoGatekeeper, scheduleGroupAutomation } = require("./handlers/grupoGatekeeper");
 
-// ✅ NOVO: Importar agendador de promoções e handlers de botão
+// ✅ Importar agendador de promoções e handlers de botão
 const { schedulePromotions } = require("./handlers/schedulePromotions");
 const { handleButtonTest, handleButtonResponse } = require("./handlers/buttonTestHandler");
 
@@ -57,11 +57,9 @@ const GRUPOS_PROMO = [
   "120363418676894598@g.us",
 ];
 
-// ===================== Controle de mensagens =====================
+// ===================== Estado Global =====================
 let pendingMessages = [];
 const processedMessages = new Set();
-
-// Simple guard to avoid multiple simultaneous bot instances
 let currentSock = null;
 let restarting = false;
 
@@ -122,15 +120,14 @@ async function syncAuthToSupabase() {
   }, 3000);
 }
 
-// Periodically push auth to Supabase every 5 minutes
+// Sincroniza a cada 5 minutos
 setInterval(() => {
   syncAuthToSupabase().catch(e => console.error('Interval sync error', e));
 }, 5 * 60 * 1000);
 
-// ===================== Helpers =====================
+// ===================== Utils =====================
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-// Exponential backoff reconnect manager
 async function safeRestart(deviceName, authFolder, attempt = 1) {
   if (restarting) return;
   restarting = true;
@@ -139,24 +136,23 @@ async function safeRestart(deviceName, authFolder, attempt = 1) {
   await delay(waitMs);
 
   try {
-    if (currentSock && currentSock.end) {
-      try { currentSock.end(); } catch (e) { /* ignore */ }
+    if (currentSock?.end) {
+      currentSock.end();
     }
-  } catch (err) { }
+  } catch (e) { }
 
   restarting = false;
   try {
     await iniciarBot(deviceName, authFolder, attempt + 1);
   } catch (err) {
     console.error('❌ Falha ao reiniciar bot:', err?.message || err);
-    // tenta novamente após 1 min se falhar
     setTimeout(() => safeRestart(deviceName, authFolder, attempt + 1), 60_000);
   }
 }
 
-// ===================== Bot =====================
+// ===================== Bot Principal =====================
 async function iniciarBot(deviceName, authFolder, attempt = 1) {
-  console.log(`🟢 Iniciando o bot para o dispositivo: ${deviceName} (attempt ${attempt})...`);
+  console.log(`🟢 Iniciando o bot para o dispositivo: ${deviceName} (tentativa ${attempt})...`);
 
   await syncAuthFromSupabase();
 
@@ -192,10 +188,10 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     if (qr) {
       try {
         const qrBase64 = await QRCode.toDataURL(qr);
-        console.log(`📌 Escaneie o QR Code do dispositivo: ${deviceName}`);
+        console.log(`📌 QR Code para ${deviceName}:`);
         console.log(qrBase64.split(",")[1]);
       } catch (err) {
-        console.error("❌ Erro ao gerar QR Code base64:", err.message || err);
+        console.error("❌ Erro ao gerar QR Code:", err);
       }
     }
 
@@ -205,19 +201,16 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
       console.error(`⚠️ Conexão fechada. statusCode=${statusCode} reason=${reason?.message || reason}`);
 
       if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-        console.log("❌ Bot deslogado. Removendo credenciais locais e forçando re-login...");
+        console.log("❌ Deslogado. Limpando credenciais...");
         try {
           if (fs.existsSync(authFolder)) fs.rmSync(authFolder, { recursive: true, force: true });
-        } catch (err) { console.error('Erro ao remover auth local:', err); }
-
-        await safeRestart(deviceName, authFolder, attempt);
-        return;
+        } catch (err) { console.error('Erro ao limpar auth:', err); }
       }
 
       await safeRestart(deviceName, authFolder, attempt);
-
-    } else if (connection === "open") {
-      console.log(`✅ Bot conectado no dispositivo: ${deviceName}`);
+    } 
+    else if (connection === "open") {
+      console.log(`✅ Bot conectado: ${deviceName}`);
       await processPendingMessages();
 
       try {
@@ -232,9 +225,8 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
           console.log(`🚀 Iniciando agendador de promoções...`);
           schedulePromotions(sock, GRUPOS_PROMO);
         }
-
       } catch (err) {
-        console.error("❌ Não foi possível carregar a lista de grupos:", err.message || err);
+        console.error("❌ Falha ao carregar grupos:", err);
       }
     }
   });
@@ -244,28 +236,27 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
       await saveCreds();
       await syncAuthToSupabase();
     } catch (err) {
-      console.error('❌ Erro ao salvar credenciais:', err?.message || err);
+      console.error('❌ Erro ao salvar credenciais:', err);
     }
   });
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
-    if (!messages || !messages.length) return;
+    if (!messages?.length) return;
     const msg = messages[0];
     if (msg.key.fromMe) return;
 
     const msgId = msg.key.id;
     if (processedMessages.has(msgId)) return;
     processedMessages.add(msgId);
-    if (processedMessages.size > 10000) {
-      const arr = Array.from(processedMessages).slice(-5000);
+    // Limite rigoroso para evitar memory leak
+    if (processedMessages.size > 5000) {
+      const arr = Array.from(processedMessages).slice(-2000);
       processedMessages.clear();
-      arr.forEach(i => processedMessages.add(i));
+      arr.forEach(id => processedMessages.add(id));
     }
 
     const senderJid = msg.key.remoteJid;
-    if (senderJid.endsWith("@g.us") && 
-        !ALLOWED_GROUPS.includes(senderJid) && 
-        !GRUPOS_PROMO.includes(senderJid)) return;
+    if (senderJid.endsWith("@g.us") && !ALLOWED_GROUPS.includes(senderJid) && !GRUPOS_PROMO.includes(senderJid)) return;
 
     let messageText = (
       msg.message?.conversation ||
@@ -278,7 +269,7 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
     console.log(`💬 Nova mensagem de ${senderJid}: "${messageText}"`);
 
     try { await handleAntiLinkMessage(sock, msg); } 
-    catch (err) { console.error("❌ AntiLink:", err.message || err); }
+    catch (err) { console.error("❌ AntiLink:", err); }
 
     if (msg.message?.buttonsResponseMessage) {
       await handleButtonResponse(sock, msg);
@@ -307,7 +298,7 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
         await handleTabela(sock, msg);
 
     } catch (err) {
-      console.error("❌ Erro ao processar mensagem:", err.message || err);
+      console.error("❌ Erro ao processar mensagem:", err);
       pendingMessages.push({ jid: senderJid, msg: { text: "❌ Ocorreu um erro ao processar sua solicitação." } });
     }
   });
@@ -317,7 +308,7 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
       try {
         await handleReaction({ reactionMessage: reactionMsg, sock });
       } catch (err) {
-        console.error("❌ Erro ao processar reação:", err.message || err);
+        console.error("❌ Erro ao processar reação:", err);
       }
     }
   });
@@ -338,7 +329,7 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
             await sock.sendMessage(id, { text: mensagem, mentions: [participant] });
           }
         } catch (err) {
-          console.error("❌ Erro ao enviar boas-vindas:", err.message || err);
+          console.error("❌ Erro ao enviar boas-vindas:", err);
         }
       }
     }
@@ -347,38 +338,46 @@ async function iniciarBot(deviceName, authFolder, attempt = 1) {
   return sock;
 }
 
-// ===================== Global Error Handlers =====================
-process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-// ===================== Inicialização =====================
-iniciarBot("Dispositivo 1", AUTH_FOLDER).catch(err => {
-  console.error('❌ Falha ao iniciar bot:', err?.message || err);
-});
-
+// ===================== Servidor HTTP (para UptimeRobot) =====================
 const PORT = process.env.PORT || 3000;
 app.get("/", (_, res) => res.send("✅ TopBot rodando com sucesso!"));
 app.listen(PORT, () => console.log(`🌐 Servidor HTTP ativo na porta ${PORT}`));
 
-// ===================== 🔁 REFORTALECIMENTO CONTÍNUO =====================
-
-// Auto-ping interno
+// Auto-ping para manter ativo (Render dorme em 15min de inatividade HTTP)
 setInterval(() => {
   fetch(`http://localhost:${PORT}`).catch(() => {});
-}, 4 * 60 * 1000); // 4 minutos
+}, 4 * 60 * 1000); // a cada 4 minutos
 
-// Watchdog de conexão
+// ===================== WATCHDOG ROBUSTO =====================
 setInterval(async () => {
-  if (!currentSock?.ws || currentSock?.ws?.readyState !== 1) {
-    console.log("⚠️ Socket parece desconectado. Tentando reiniciar...");
+  if (!currentSock || restarting) return;
+
+  try {
+    // Testa se o socket ainda está funcional
+    await currentSock.user; // lança erro se não estiver conectado
+    console.log("✅ Watchdog: conexão ativa.");
+  } catch (err) {
+    console.error("⚠️ Watchdog: conexão falhou. Reiniciando...");
     await safeRestart("Dispositivo 1", AUTH_FOLDER);
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000); // a cada 5 minutos
 
-// Bloqueio de encerramento acidental
-process.on("SIGINT", () => console.log("🛑 Interceptado Ctrl+C, ignorando encerramento."));
-process.on("SIGTERM", () => console.log("🛑 Sinal de encerramento ignorado."));
+// ===================== TRATAMENTO DE FALHAS FATAIS (ESSENCIAL NO RENDER) =====================
+process.on('unhandledRejection', (reason, p) => {
+  console.error('❌ UNHANDLED REJECTION → Reiniciando processo...');
+  console.error('Promise:', p);
+  console.error('Reason:', reason);
+  process.exit(1); // Render reinicia o serviço
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ UNCAUGHT EXCEPTION → Reiniciando processo...');
+  console.error('Error:', err);
+  process.exit(1); // Render reinicia o serviço
+});
+
+// ===================== INICIALIZAÇÃO =====================
+iniciarBot("Dispositivo 1", AUTH_FOLDER).catch(err => {
+  console.error('❌ Falha ao iniciar bot:', err);
+  process.exit(1);
+});
