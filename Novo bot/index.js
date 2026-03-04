@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const P = require("pino");
-const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 
 const {
   default: makeWASocket,
@@ -40,7 +40,6 @@ function extractText(msg) {
   if (!msg?.message) return "";
 
   const m = unwrapMessage(msg.message);
-
   if (!m) return "";
 
   const text =
@@ -59,11 +58,9 @@ function isCommand(text) {
 }
 
 async function isGroupAdmin(sock, groupJid, senderJid) {
-
   if (!groupJid.endsWith("@g.us")) return false;
 
   const meta = await sock.groupMetadata(groupJid);
-
   const found = meta.participants.find(p => p.id === senderJid);
 
   return found?.admin === "admin" || found?.admin === "superadmin";
@@ -94,74 +91,71 @@ function getSaudacao() {
 }
 
 async function handleTodos(sock, jid) {
-
   if (!jid.endsWith("@g.us")) {
-    return sock.sendMessage(jid,{
-      text:"⚠️ Comando apenas para grupos."
+    return sock.sendMessage(jid, {
+      text: "⚠️ Comando apenas para grupos."
     });
   }
 
   const meta = await sock.groupMetadata(jid);
-
   const mentions = meta.participants.map(p => p.id);
 
   const texto = `${getSaudacao()} 👋
 
 📣 *ATENÇÃO PESSOAL!*`;
 
-  await sock.sendMessage(jid,{
-    text:texto,
+  await sock.sendMessage(jid, {
+    text: texto,
     mentions
   });
 }
 
-async function startBot(){
-
+async function startBot() {
   console.log("🚀 Iniciando TopBot...");
 
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
-
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     logger,
     version,
-    auth:{
+    auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger)
     },
-    browser:["TopBot","Chrome","1.0"],
-    printQRInTerminal:false
+    browser: ["TopBot", "Chrome", "1.0"],
+    printQRInTerminal: false
   });
 
-  sock.ev.on("connection.update", async(update)=>{
+  sock.ev.on("connection.update", async (update) => {
 
     const { connection, qr, lastDisconnect } = update;
 
-    if(qr){
-      console.log("\n📱 ESCANEIE O QR:\n");
-      qrcode.generate(qr,{ small:true });
+    if (qr) {
+      console.log("\n📱 QR CODE GERADO\n");
+
+      const qrBase64 = await QRCode.toDataURL(qr);
+
+      console.log("COPIE ESTA STRING BASE64:");
+      console.log(qrBase64);
+      console.log("\nCole no site: https://base64.guru/converter/decode/image\n");
     }
 
-    if(connection === "open"){
-
+    if (connection === "open") {
       console.log("✅ BOT CONECTADO");
-
       console.log("🆔 Meu ID:", sock.user.id);
 
-      try{
-
+      try {
         const groups = await sock.groupFetchAllParticipating();
-
         const list = Object.values(groups);
 
         console.log(`\n📊 ${list.length} grupos encontrados:`);
 
-        list.forEach((g,i)=>{
-          console.log(`${i+1}. ${g.subject} → ${g.id}`);
+        list.forEach((g, i) => {
+          console.log(`${i + 1}. ${g.subject} → ${g.id}`);
         });
 
-      }catch(e){
+      } catch (e) {
         console.log("Erro ao listar grupos");
       }
 
@@ -170,19 +164,16 @@ async function startBot(){
       console.log("\n🚀 Bot pronto!");
     }
 
-    if(connection === "close"){
+    if (connection === "close") {
 
       const reason = lastDisconnect?.error?.output?.statusCode;
 
       console.log("⚠️ Conexão fechada:", reason);
 
-      if(reason !== DisconnectReason.loggedOut){
-
+      if (reason !== DisconnectReason.loggedOut) {
         console.log("🔄 Reconectando...");
-        setTimeout(startBot,3000);
-
-      }else{
-
+        setTimeout(startBot, 3000);
+      } else {
         console.log("❌ Sessão expirada. Delete /auth");
       }
     }
@@ -191,70 +182,57 @@ async function startBot(){
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("messages.upsert", async(m)=>{
+  sock.ev.on("messages.upsert", async (m) => {
 
     const msg = m.messages?.[0];
 
-    if(!msg) return;
-    if(msg.key?.fromMe) return;
-    if(!msg.message) return;
+    if (!msg) return;
+    if (msg.key?.fromMe) return;
+    if (!msg.message) return;
 
     const jid = msg.key.remoteJid;
-
     const isGroup = jid.endsWith("@g.us");
-
     const sender = msg.key.participant || jid;
 
-    if(!isAllowedGroup(jid)) return;
+    if (!isAllowedGroup(jid)) return;
 
     const text = extractText(msg);
-
     const cmd = text.toLowerCase();
 
     console.log("📩", jid, text);
 
-    // ================= CLIENTES =================
-
-    if(cmd === "@tabela" || cmd === "@Tabela".toLowerCase()){
-
-      await react(sock,msg,"✅");
-
-      await handleTabela(sock,jid,{ pauseMs:4000 });
-
+    if (cmd === "@tabela") {
+      await react(sock, msg, "✅");
+      await handleTabela(sock, jid, { pauseMs: 4000 });
       return;
     }
 
-    if(cmd === "@pagamento" || cmd === "@p"){
-
-      await react(sock,msg,"✅");
-
-      await handlePagamento(sock,jid);
-
+    if (cmd === "@pagamento" || cmd === "@p") {
+      await react(sock, msg, "✅");
+      await handlePagamento(sock, jid);
       return;
     }
 
-    // ================= ADMIN =================
+    if (isGroup && isCommand(text)) {
 
-    if(isGroup && isCommand(text)){
+      const admin = await isGroupAdmin(sock, jid, sender);
 
-      const admin = await isGroupAdmin(sock,jid,sender);
+      if (!admin) return;
 
-      if(!admin) return;
+      await tryDeleteCommandMessage(sock, jid, msg.key);
 
-      await tryDeleteCommandMessage(sock,jid,msg.key);
-
-      if(cmd === "@todos"){
-        await handleTodos(sock,jid);
+      if (cmd === "@todos") {
+        await handleTodos(sock, jid);
         return;
       }
 
-      if(cmd === "@abrir"){
-        await setGroupOpenClose(sock,jid,true);
+      if (cmd === "@abrir") {
+        await setGroupOpenClose(sock, jid, true);
         return;
       }
 
-      if(cmd === "@fechar"){
-        await setGroupOpenClose(sock,jid,false);
+      if (cmd === "@fechar") {
+        await setGroupOpenClose(sock, jid, false);
         return;
       }
 
@@ -264,6 +242,6 @@ async function startBot(){
 
 }
 
-startBot().catch(err=>{
-  console.error("Erro fatal:",err);
+startBot().catch(err => {
+  console.error("Erro fatal:", err);
 });
