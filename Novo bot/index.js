@@ -132,7 +132,6 @@ if(name.startsWith("tabela")){
 await handleTabela(sock,jid)
 }
 
-/* intervalo entre grupos */
 await delay(4000)
 
 }catch(e){
@@ -148,7 +147,7 @@ log("✅ Executou tarefa "+name)
 }
 
 /* ==============================
-RECOVER
+RECOVER (mantido mas não usado)
 ============================== */
 
 async function recoverTasks(){
@@ -177,7 +176,6 @@ log("⚡ Recuperando tarefa "+t.name)
 
 await executeTask(t.name)
 
-/* intervalo entre tarefas */
 await delay(5000)
 
 state.executed.push(t.name)
@@ -268,8 +266,6 @@ browser:["TopBot","Chrome","1.0"]
 
 })
 
-/* conexão */
-
 sock.ev.on("connection.update",async(update)=>{
 
 const{connection,lastDisconnect,qr}=update
@@ -299,8 +295,7 @@ console.log(`${i+1}. ${g.subject}`)
 console.log(g.id)
 })
 
-await recoverTasks()
-
+/* apenas scheduler */
 setupScheduler(sock)
 
 log("🚀 Bot pronto")
@@ -374,8 +369,6 @@ delete: msg.key
 }
 
 }
-
-/* comandos */
 
 if(text === "@teste"){
 await sock.sendMessage(jid,{text:"✅ Bot funcionando"})
