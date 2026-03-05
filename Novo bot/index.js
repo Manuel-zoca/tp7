@@ -2,6 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const P = require("pino");
 const QRCode = require("qrcode");
+const express = require("express");
+const axios = require("axios");
 
 const {
   default: makeWASocket,
@@ -19,6 +21,43 @@ const CONFIG_PATH = path.join(__dirname, "config.json");
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
 
 const logger = P({ level: "silent" });
+
+/* =============================
+   🌐 SERVIDOR WEB (ANTI SLEEP)
+============================= */
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("🤖 TopBot ONLINE");
+});
+
+app.get("/ping", (req, res) => {
+  res.send("pong");
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("🌐 WebServer ativo na porta", PORT);
+});
+
+/* =============================
+   🔁 KEEP ALIVE INTERNO
+============================= */
+
+setInterval(async () => {
+  try {
+    const url = process.env.RENDER_EXTERNAL_URL || "http://localhost:" + PORT;
+    await axios.get(url);
+    console.log("🔄 KeepAlive ping");
+  } catch {}
+}, 240000); // 4 minutos
+
+
+/* =============================
+   🔧 FUNÇÕES BOT
+============================= */
 
 function isAllowedGroup(jid) {
   if (!jid.endsWith("@g.us")) return true;
@@ -91,11 +130,6 @@ function getSaudacao() {
 }
 
 async function handleTodos(sock, jid) {
-  if (!jid.endsWith("@g.us")) {
-    return sock.sendMessage(jid, {
-      text: "⚠️ Comando apenas para grupos."
-    });
-  }
 
   const meta = await sock.groupMetadata(jid);
   const mentions = meta.participants.map(p => p.id);
@@ -110,7 +144,12 @@ async function handleTodos(sock, jid) {
   });
 }
 
+/* =============================
+   🚀 START BOT
+============================= */
+
 async function startBot() {
+
   console.log("🚀 Iniciando TopBot...");
 
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
@@ -123,8 +162,7 @@ async function startBot() {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger)
     },
-    browser: ["TopBot", "Chrome", "1.0"],
-    printQRInTerminal: false
+    browser: ["TopBot", "Chrome", "1.0"]
   });
 
   sock.ev.on("connection.update", async (update) => {
@@ -136,32 +174,19 @@ async function startBot() {
 
       const qrBase64 = await QRCode.toDataURL(qr);
 
-      console.log("COPIE ESTA STRING BASE64:");
       console.log(qrBase64);
-      console.log("\nCole no site: https://base64.guru/converter/decode/image\n");
+      console.log("\nCole em: https://base64.guru/converter/decode/image\n");
     }
 
     if (connection === "open") {
+
       console.log("✅ BOT CONECTADO");
       console.log("🆔 Meu ID:", sock.user.id);
 
-      try {
-        const groups = await sock.groupFetchAllParticipating();
-        const list = Object.values(groups);
-
-        console.log(`\n📊 ${list.length} grupos encontrados:`);
-
-        list.forEach((g, i) => {
-          console.log(`${i + 1}. ${g.subject} → ${g.id}`);
-        });
-
-      } catch (e) {
-        console.log("Erro ao listar grupos");
-      }
-
       setupScheduler(sock);
 
-      console.log("\n🚀 Bot pronto!");
+      console.log("🚀 Bot pronto!");
+
     }
 
     if (connection === "close") {
@@ -171,11 +196,16 @@ async function startBot() {
       console.log("⚠️ Conexão fechada:", reason);
 
       if (reason !== DisconnectReason.loggedOut) {
+
         console.log("🔄 Reconectando...");
-        setTimeout(startBot, 3000);
+        setTimeout(startBot, 5000);
+
       } else {
-        console.log("❌ Sessão expirada. Delete /auth");
+
+        console.log("❌ Sessão expirada delete /auth");
+
       }
+
     }
 
   });
@@ -242,6 +272,4 @@ async function startBot() {
 
 }
 
-startBot().catch(err => {
-  console.error("Erro fatal:", err);
-});
+startBot().catch(err => console.log(err));
