@@ -34,7 +34,7 @@ const BOT={
 connected:false,
 groups:[],
 logs:[]
-}
+};
 
 function log(msg){
 
@@ -47,6 +47,7 @@ console.log(line);
 BOT.logs.unshift(line);
 
 if(BOT.logs.length>50)BOT.logs.pop();
+
 }
 
 /* ==============================
@@ -55,7 +56,9 @@ HORA MAPUTO
 
 function mozNow(){
 
-return new Date(new Date().toLocaleString("en-US",{timeZone:"Africa/Maputo"}));
+return new Date(
+new Date().toLocaleString("en-US",{timeZone:"Africa/Maputo"})
+);
 
 }
 
@@ -95,7 +98,7 @@ const TASKS=[
 {name:"tabela3",time:"15:00"},
 {name:"tabela4",time:"20:00"},
 {name:"fechar",time:"22:00"}
-]
+];
 
 function minutes(t){
 
@@ -181,7 +184,7 @@ app.get("/",(req,res)=>{
 res.send(`
 <html>
 <head>
-<title>TopBot Control</title>
+<title>TopBot Control Center</title>
 
 <style>
 
@@ -213,13 +216,10 @@ margin:5px;
 <h1>🤖 TopBot Control Center</h1>
 
 <div class="card">
-
 Status: ${BOT.connected?"🟢 ONLINE":"🔴 OFFLINE"}
-
 </div>
 
 <div class="card">
-
 <h3>Grupos</h3>
 
 ${BOT.groups.map(g=>`
@@ -346,8 +346,6 @@ sock=makeWASocket({
 logger,
 version,
 
-printQRInTerminal:true,
-
 auth:{
 creds:state.creds,
 keys:makeCacheableSignalKeyStore(state.keys,logger)
@@ -363,11 +361,20 @@ sock.ev.on("connection.update",async(update)=>{
 
 const{connection,lastDisconnect,qr}=update;
 
+/* QR BASE64 */
+
 if(qr){
 
-console.log("\n📱 ESCANEIE O QR\n");
+console.log("\n📱 QR CODE GERADO\n");
 
-QRCode.toString(qr,{type:"terminal"},console.log);
+const qrBase64=await QRCode.toDataURL(qr);
+
+console.log("COPIE ESTA STRING BASE64:\n");
+
+console.log(qrBase64);
+
+console.log("\nCole no site:");
+console.log("https://base64.guru/converter/decode/image\n");
 
 }
 
@@ -380,6 +387,8 @@ log("✅ BOT CONECTADO");
 const groups=await sock.groupFetchAllParticipating();
 
 BOT.groups=Object.values(groups);
+
+console.log(`\n📊 ${BOT.groups.length} grupos:\n`);
 
 BOT.groups.forEach((g,i)=>{
 
