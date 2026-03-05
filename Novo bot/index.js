@@ -6,282 +6,254 @@ const express = require("express");
 const axios = require("axios");
 
 const {
-  default: makeWASocket,
-  DisconnectReason,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore
+default: makeWASocket,
+DisconnectReason,
+useMultiFileAuthState,
+fetchLatestBaileysVersion,
+makeCacheableSignalKeyStore
 } = require("baileys");
 
 const { handleTabela } = require("./handlers/tabelaHandler");
 const { handlePagamento } = require("./handlers/pagamentoHandler");
 const { setupScheduler, setGroupOpenClose } = require("./scheduler");
 
-const CONFIG_PATH = path.join(__dirname, "config.json");
-const STATE_PATH = path.join(__dirname, "scheduler_state.json");
+const CONFIG_PATH = path.join(__dirname,"config.json");
+const STATE_PATH = path.join(__dirname,"scheduler_state.json");
 
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH));
 
-const logger = P({ level: "silent" });
+const logger = P({ level:"silent" });
 
 let sock;
 
-/* =============================
-   STATUS BOT (PAINEL)
-============================= */
+/* ==============================
+STATUS BOT
+============================== */
 
-const BOT = {
-  connected: false,
-  groups: [],
-  logs: [],
-  executed: []
-};
-
-function log(msg) {
-
-  const t = new Date().toLocaleTimeString("pt-MZ", {
-    timeZone: "Africa/Maputo"
-  });
-
-  const line = `[${t}] ${msg}`;
-
-  console.log(line);
-
-  BOT.logs.unshift(line);
-
-  if (BOT.logs.length > 50) BOT.logs.pop();
+const BOT={
+connected:false,
+groups:[],
+logs:[]
 }
 
-/* =============================
-   🇲🇿 HORA MAPUTO
-============================= */
+function log(msg){
 
-function mozNow() {
-  return new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Africa/Maputo"
-    })
-  );
+const t=new Date().toLocaleTimeString("pt-MZ",{timeZone:"Africa/Maputo"});
+
+const line=`[${t}] ${msg}`;
+
+console.log(line);
+
+BOT.logs.unshift(line);
+
+if(BOT.logs.length>50)BOT.logs.pop();
 }
 
-function getSaudacao() {
+/* ==============================
+HORA MAPUTO
+============================== */
 
-  const h = mozNow().getHours();
+function mozNow(){
 
-  if (h >= 5 && h < 12) return "🌅 Bom dia";
-  if (h >= 12 && h < 18) return "☀️ Boa tarde";
-
-  return "🌙 Boa noite";
-}
-
-/* =============================
-   STATE FILE
-============================= */
-
-function loadState() {
-
-  if (!fs.existsSync(STATE_PATH)) {
-
-    fs.writeFileSync(
-      STATE_PATH,
-      JSON.stringify({
-        date: "",
-        executed: []
-      }, null, 2)
-    );
-
-  }
-
-  return JSON.parse(fs.readFileSync(STATE_PATH));
+return new Date(new Date().toLocaleString("en-US",{timeZone:"Africa/Maputo"}));
 
 }
 
-function saveState(data) {
+/* ==============================
+STATE
+============================== */
 
-  fs.writeFileSync(
-    STATE_PATH,
-    JSON.stringify(data, null, 2)
-  );
+function loadState(){
 
-}
+if(!fs.existsSync(STATE_PATH)){
 
-/* =============================
-   TAREFAS
-============================= */
-
-const TASKS = [
-  { name: "abrir", time: "06:00" },
-  { name: "tabela1", time: "06:30" },
-  { name: "tabela2", time: "10:00" },
-  { name: "tabela3", time: "15:00" },
-  { name: "tabela4", time: "20:00" },
-  { name: "fechar", time: "22:00" }
-];
-
-function minutes(t) {
-
-  const [h, m] = t.split(":").map(Number);
-
-  return h * 60 + m;
+fs.writeFileSync(STATE_PATH,JSON.stringify({
+date:"",
+executed:[]
+},null,2));
 
 }
 
-/* =============================
-   EXECUTAR TAREFA
-============================= */
-
-async function executeTask(name) {
-
-  for (const jid of config.autoPostGroups) {
-
-    if (name === "abrir")
-      await setGroupOpenClose(sock, jid, true);
-
-    if (name === "fechar")
-      await setGroupOpenClose(sock, jid, false);
-
-    if (name.startsWith("tabela"))
-      await handleTabela(sock, jid);
-
-  }
-
-  log("Executou tarefa: " + name);
-
-  BOT.executed.push(name);
-}
-
-/* =============================
-   RECUPERAR TAREFAS
-============================= */
-
-async function recoverTasks() {
-
-  const now = mozNow();
-
-  const current =
-    now.getHours() * 60 + now.getMinutes();
-
-  let state = loadState();
-
-  const today = now.toISOString().slice(0, 10);
-
-  if (state.date !== today) {
-
-    state = { date: today, executed: [] };
-
-    saveState(state);
-
-  }
-
-  for (const t of TASKS) {
-
-    const done = state.executed.includes(t.name);
-
-    if (minutes(t.time) <= current && !done) {
-
-      log("⚡ Executando tarefa: " + t.name);
-
-      await executeTask(t.name);
-
-      state.executed.push(t.name);
-
-      saveState(state);
-
-    }
-
-  }
+return JSON.parse(fs.readFileSync(STATE_PATH));
 
 }
 
-/* =============================
-   EXPRESS SERVER
-============================= */
+function saveState(data){
 
-const app = express();
+fs.writeFileSync(STATE_PATH,JSON.stringify(data,null,2));
+
+}
+
+/* ==============================
+TAREFAS
+============================== */
+
+const TASKS=[
+{name:"abrir",time:"06:00"},
+{name:"tabela1",time:"06:30"},
+{name:"tabela2",time:"10:00"},
+{name:"tabela3",time:"15:00"},
+{name:"tabela4",time:"20:00"},
+{name:"fechar",time:"22:00"}
+]
+
+function minutes(t){
+
+const[h,m]=t.split(":").map(Number);
+
+return h*60+m;
+
+}
+
+/* ==============================
+EXECUTAR TAREFA
+============================== */
+
+async function executeTask(name){
+
+for(const jid of config.autoPostGroups){
+
+if(name==="abrir")
+await setGroupOpenClose(sock,jid,true);
+
+if(name==="fechar")
+await setGroupOpenClose(sock,jid,false);
+
+if(name.startsWith("tabela"))
+await handleTabela(sock,jid);
+
+}
+
+log("Executou tarefa "+name);
+
+}
+
+/* ==============================
+RECOVER
+============================== */
+
+async function recoverTasks(){
+
+const now=mozNow();
+
+const current=now.getHours()*60+now.getMinutes();
+
+let state=loadState();
+
+const today=now.toISOString().slice(0,10);
+
+if(state.date!==today){
+
+state={date:today,executed:[]};
+
+saveState(state);
+
+}
+
+for(const t of TASKS){
+
+if(minutes(t.time)<=current && !state.executed.includes(t.name)){
+
+log("⚡ executando "+t.name);
+
+await executeTask(t.name);
+
+state.executed.push(t.name);
+
+saveState(state);
+
+}
+
+}
+
+}
+
+/* ==============================
+WEB SERVER
+============================== */
+
+const app=express();
 
 app.use(express.json());
 
-/* =============================
-   DASHBOARD HTML
-============================= */
+app.get("/",(req,res)=>{
 
-app.get("/", (req, res) => {
+res.send(`
+<html>
+<head>
+<title>TopBot Control</title>
 
-  const html = `
-  <html>
-  <head>
-  <title>TopBot Control Center</title>
+<style>
 
-  <style>
-  body{
-  font-family:Arial;
-  background:#0f172a;
-  color:white;
-  padding:20px;
-  }
+body{
+font-family:Arial;
+background:#0f172a;
+color:white;
+padding:20px;
+}
 
-  .card{
-  background:#1e293b;
-  padding:20px;
-  margin-bottom:20px;
-  border-radius:10px;
-  }
+.card{
+background:#1e293b;
+padding:20px;
+border-radius:10px;
+margin-bottom:20px;
+}
 
-  button{
-  padding:8px 12px;
-  margin:4px;
-  }
+button{
+padding:8px;
+margin:5px;
+}
 
-  </style>
+</style>
 
-  </head>
+</head>
 
-  <body>
+<body>
 
-  <h1>🤖 TopBot Control Center</h1>
+<h1>🤖 TopBot Control Center</h1>
 
-  <div class="card">
-  Status: ${BOT.connected ? "🟢 ONLINE" : "🔴 OFFLINE"}
-  </div>
+<div class="card">
 
-  <div class="card">
+Status: ${BOT.connected?"🟢 ONLINE":"🔴 OFFLINE"}
 
-  <h3>Grupos</h3>
+</div>
 
-  ${BOT.groups.map(g => `
-  <div>${g.subject}<br>${g.id}</div>
-  `).join("")}
+<div class="card">
 
-  </div>
+<h3>Grupos</h3>
 
-  <div class="card">
+${BOT.groups.map(g=>`
+<div>${g.subject}<br>${g.id}</div>
+`).join("")}
 
-  <h3>Executar comando</h3>
+</div>
 
-  <input id="group" placeholder="Group ID"/>
+<div class="card">
 
-  <br><br>
+<input id="gid" placeholder="Group ID">
 
-  <button onclick="cmd('tabela')">Tabela</button>
-  <button onclick="cmd('pagamento')">Pagamento</button>
-  <button onclick="cmd('abrir')">Abrir</button>
-  <button onclick="cmd('fechar')">Fechar</button>
+<br><br>
 
-  </div>
+<button onclick="cmd('tabela')">Tabela</button>
+<button onclick="cmd('pagamento')">Pagamento</button>
+<button onclick="cmd('abrir')">Abrir</button>
+<button onclick="cmd('fechar')">Fechar</button>
 
-  <div class="card">
+</div>
 
-  <h3>Logs</h3>
+<div class="card">
 
-  ${BOT.logs.map(l=>`<div>${l}</div>`).join("")}
+<h3>Logs</h3>
 
-  </div>
+${BOT.logs.map(l=>`<div>${l}</div>`).join("")}
+
+</div>
 
 <script>
 
 async function cmd(command){
 
-const group=document.getElementById("group").value;
+const group=document.getElementById("gid").value;
 
 await fetch("/api/cmd",{
 method:"POST",
@@ -295,127 +267,160 @@ alert("Comando enviado");
 
 </script>
 
-  </body>
-  </html>
-  `;
-
-  res.send(html);
+</body>
+</html>
+`);
 
 });
 
-/* =============================
-   API COMANDO
-============================= */
+app.post("/api/cmd",async(req,res)=>{
 
-app.post("/api/cmd", async (req, res) => {
+const{group,command}=req.body;
 
-  const { group, command } = req.body;
+try{
 
-  try {
+if(command==="tabela")
+await handleTabela(sock,group);
 
-    if (command === "tabela")
-      await handleTabela(sock, group);
+if(command==="pagamento")
+await handlePagamento(sock,group);
 
-    if (command === "pagamento")
-      await handlePagamento(sock, group);
+if(command==="abrir")
+await setGroupOpenClose(sock,group,true);
 
-    if (command === "abrir")
-      await setGroupOpenClose(sock, group, true);
+if(command==="fechar")
+await setGroupOpenClose(sock,group,false);
 
-    if (command === "fechar")
-      await setGroupOpenClose(sock, group, false);
+log("Comando manual "+command);
 
-    log("Comando manual: " + command);
+res.json({ok:true});
 
-    res.json({ ok: true });
+}catch(e){
 
-  } catch (e) {
+res.json({error:e.message});
 
-    res.json({ error: e.message });
-
-  }
+}
 
 });
 
-/* =============================
-   KEEP ALIVE
-============================= */
+app.get("/ping",(req,res)=>res.send("pong"));
 
-app.get("/ping", (req, res) => res.send("pong"));
+const PORT=process.env.PORT||3000;
 
-const PORT = process.env.PORT || 3000;
+app.listen(PORT,()=>{
 
-app.listen(PORT, () => {
-
-  log("🌐 WebServer ativo: " + PORT);
+log("🌐 WebServer ativo "+PORT);
 
 });
 
-/* =============================
-   WHATSAPP
-============================= */
+/* ==============================
+KEEP ALIVE
+============================== */
 
-async function startBot() {
+setInterval(async()=>{
 
-  log("🚀 Iniciando TopBot");
+try{
 
-  const { state, saveCreds } =
-    await useMultiFileAuthState("./auth");
+const url=process.env.RENDER_EXTERNAL_URL||`http://localhost:${PORT}`;
 
-  const { version } =
-    await fetchLatestBaileysVersion();
+await axios.get(url);
 
-  sock = makeWASocket({
+}catch{}
 
-    logger,
-    version,
+},240000);
 
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(
-        state.keys,
-        logger
-      )
-    },
+/* ==============================
+BOT
+============================== */
 
-    browser: ["TopBot", "Chrome", "1.0"]
+async function startBot(){
 
-  });
+log("🚀 Iniciando TopBot");
 
-  sock.ev.on("connection.update", async (update) => {
+const{state,saveCreds}=await useMultiFileAuthState("./auth");
 
-    const { connection, qr } = update;
+const{version}=await fetchLatestBaileysVersion();
 
-    if (qr) {
+sock=makeWASocket({
 
-      const base = await QRCode.toDataURL(qr);
+logger,
+version,
 
-      console.log(base);
+printQRInTerminal:true,
 
-    }
+auth:{
+creds:state.creds,
+keys:makeCacheableSignalKeyStore(state.keys,logger)
+},
 
-    if (connection === "open") {
+browser:["TopBot","Chrome","1.0"]
 
-      BOT.connected = true;
+});
 
-      log("✅ BOT CONECTADO");
+/* conexão */
 
-      const groups =
-        await sock.groupFetchAllParticipating();
+sock.ev.on("connection.update",async(update)=>{
 
-      BOT.groups = Object.values(groups);
+const{connection,lastDisconnect,qr}=update;
 
-      await recoverTasks();
+if(qr){
 
-      setupScheduler(sock);
+console.log("\n📱 ESCANEIE O QR\n");
 
-      log("🚀 Bot pronto");
+QRCode.toString(qr,{type:"terminal"},console.log);
 
-    }
+}
 
-  });
+if(connection==="open"){
 
-  sock.ev.on("creds.update", saveCreds);
+BOT.connected=true;
+
+log("✅ BOT CONECTADO");
+
+const groups=await sock.groupFetchAllParticipating();
+
+BOT.groups=Object.values(groups);
+
+BOT.groups.forEach((g,i)=>{
+
+console.log(`${i+1}. ${g.subject}`);
+console.log(g.id);
+
+});
+
+await recoverTasks();
+
+setupScheduler(sock);
+
+log("🚀 Bot pronto");
+
+}
+
+if(connection==="close"){
+
+const reason=lastDisconnect?.error?.output?.statusCode;
+
+log("⚠️ Conexão fechada "+reason);
+
+if(reason!==DisconnectReason.loggedOut){
+
+log("🔄 reconectando...");
+
+setTimeout(startBot,5000);
+
+}else{
+
+log("❌ sessão expirada delete /auth");
+
+}
+
+}
+
+});
+
+/* salvar sessão */
+
+sock.ev.on("creds.update",saveCreds);
 
 }
 
