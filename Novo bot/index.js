@@ -18,193 +18,398 @@ const { handlePagamento } = require("./handlers/pagamentoHandler");
 const { setupScheduler, setGroupOpenClose } = require("./scheduler");
 
 const CONFIG_PATH = path.join(__dirname, "config.json");
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+const STATE_PATH = path.join(__dirname, "scheduler_state.json");
+
+const config = JSON.parse(fs.readFileSync(CONFIG_PATH));
 
 const logger = P({ level: "silent" });
 
+let sock;
+
 /* =============================
-   🌐 SERVIDOR WEB (ANTI SLEEP)
+   STATUS BOT (PAINEL)
+============================= */
+
+const BOT = {
+  connected: false,
+  groups: [],
+  logs: [],
+  executed: []
+};
+
+function log(msg) {
+
+  const t = new Date().toLocaleTimeString("pt-MZ", {
+    timeZone: "Africa/Maputo"
+  });
+
+  const line = `[${t}] ${msg}`;
+
+  console.log(line);
+
+  BOT.logs.unshift(line);
+
+  if (BOT.logs.length > 50) BOT.logs.pop();
+}
+
+/* =============================
+   🇲🇿 HORA MAPUTO
+============================= */
+
+function mozNow() {
+  return new Date(
+    new Date().toLocaleString("en-US", {
+      timeZone: "Africa/Maputo"
+    })
+  );
+}
+
+function getSaudacao() {
+
+  const h = mozNow().getHours();
+
+  if (h >= 5 && h < 12) return "🌅 Bom dia";
+  if (h >= 12 && h < 18) return "☀️ Boa tarde";
+
+  return "🌙 Boa noite";
+}
+
+/* =============================
+   STATE FILE
+============================= */
+
+function loadState() {
+
+  if (!fs.existsSync(STATE_PATH)) {
+
+    fs.writeFileSync(
+      STATE_PATH,
+      JSON.stringify({
+        date: "",
+        executed: []
+      }, null, 2)
+    );
+
+  }
+
+  return JSON.parse(fs.readFileSync(STATE_PATH));
+
+}
+
+function saveState(data) {
+
+  fs.writeFileSync(
+    STATE_PATH,
+    JSON.stringify(data, null, 2)
+  );
+
+}
+
+/* =============================
+   TAREFAS
+============================= */
+
+const TASKS = [
+  { name: "abrir", time: "06:00" },
+  { name: "tabela1", time: "06:30" },
+  { name: "tabela2", time: "10:00" },
+  { name: "tabela3", time: "15:00" },
+  { name: "tabela4", time: "20:00" },
+  { name: "fechar", time: "22:00" }
+];
+
+function minutes(t) {
+
+  const [h, m] = t.split(":").map(Number);
+
+  return h * 60 + m;
+
+}
+
+/* =============================
+   EXECUTAR TAREFA
+============================= */
+
+async function executeTask(name) {
+
+  for (const jid of config.autoPostGroups) {
+
+    if (name === "abrir")
+      await setGroupOpenClose(sock, jid, true);
+
+    if (name === "fechar")
+      await setGroupOpenClose(sock, jid, false);
+
+    if (name.startsWith("tabela"))
+      await handleTabela(sock, jid);
+
+  }
+
+  log("Executou tarefa: " + name);
+
+  BOT.executed.push(name);
+}
+
+/* =============================
+   RECUPERAR TAREFAS
+============================= */
+
+async function recoverTasks() {
+
+  const now = mozNow();
+
+  const current =
+    now.getHours() * 60 + now.getMinutes();
+
+  let state = loadState();
+
+  const today = now.toISOString().slice(0, 10);
+
+  if (state.date !== today) {
+
+    state = { date: today, executed: [] };
+
+    saveState(state);
+
+  }
+
+  for (const t of TASKS) {
+
+    const done = state.executed.includes(t.name);
+
+    if (minutes(t.time) <= current && !done) {
+
+      log("⚡ Executando tarefa: " + t.name);
+
+      await executeTask(t.name);
+
+      state.executed.push(t.name);
+
+      saveState(state);
+
+    }
+
+  }
+
+}
+
+/* =============================
+   EXPRESS SERVER
 ============================= */
 
 const app = express();
 
+app.use(express.json());
+
+/* =============================
+   DASHBOARD HTML
+============================= */
+
 app.get("/", (req, res) => {
-  res.send("🤖 TopBot ONLINE");
+
+  const html = `
+  <html>
+  <head>
+  <title>TopBot Control Center</title>
+
+  <style>
+  body{
+  font-family:Arial;
+  background:#0f172a;
+  color:white;
+  padding:20px;
+  }
+
+  .card{
+  background:#1e293b;
+  padding:20px;
+  margin-bottom:20px;
+  border-radius:10px;
+  }
+
+  button{
+  padding:8px 12px;
+  margin:4px;
+  }
+
+  </style>
+
+  </head>
+
+  <body>
+
+  <h1>🤖 TopBot Control Center</h1>
+
+  <div class="card">
+  Status: ${BOT.connected ? "🟢 ONLINE" : "🔴 OFFLINE"}
+  </div>
+
+  <div class="card">
+
+  <h3>Grupos</h3>
+
+  ${BOT.groups.map(g => `
+  <div>${g.subject}<br>${g.id}</div>
+  `).join("")}
+
+  </div>
+
+  <div class="card">
+
+  <h3>Executar comando</h3>
+
+  <input id="group" placeholder="Group ID"/>
+
+  <br><br>
+
+  <button onclick="cmd('tabela')">Tabela</button>
+  <button onclick="cmd('pagamento')">Pagamento</button>
+  <button onclick="cmd('abrir')">Abrir</button>
+  <button onclick="cmd('fechar')">Fechar</button>
+
+  </div>
+
+  <div class="card">
+
+  <h3>Logs</h3>
+
+  ${BOT.logs.map(l=>`<div>${l}</div>`).join("")}
+
+  </div>
+
+<script>
+
+async function cmd(command){
+
+const group=document.getElementById("group").value;
+
+await fetch("/api/cmd",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({group,command})
 });
 
-app.get("/ping", (req, res) => {
-  res.send("pong");
+alert("Comando enviado");
+
+}
+
+</script>
+
+  </body>
+  </html>
+  `;
+
+  res.send(html);
+
 });
+
+/* =============================
+   API COMANDO
+============================= */
+
+app.post("/api/cmd", async (req, res) => {
+
+  const { group, command } = req.body;
+
+  try {
+
+    if (command === "tabela")
+      await handleTabela(sock, group);
+
+    if (command === "pagamento")
+      await handlePagamento(sock, group);
+
+    if (command === "abrir")
+      await setGroupOpenClose(sock, group, true);
+
+    if (command === "fechar")
+      await setGroupOpenClose(sock, group, false);
+
+    log("Comando manual: " + command);
+
+    res.json({ ok: true });
+
+  } catch (e) {
+
+    res.json({ error: e.message });
+
+  }
+
+});
+
+/* =============================
+   KEEP ALIVE
+============================= */
+
+app.get("/ping", (req, res) => res.send("pong"));
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("🌐 WebServer ativo na porta", PORT);
+
+  log("🌐 WebServer ativo: " + PORT);
+
 });
 
 /* =============================
-   🔁 KEEP ALIVE INTERNO
-============================= */
-
-setInterval(async () => {
-  try {
-    const url = process.env.RENDER_EXTERNAL_URL || "http://localhost:" + PORT;
-    await axios.get(url);
-    console.log("🔄 KeepAlive ping");
-  } catch {}
-}, 240000); // 4 minutos
-
-
-/* =============================
-   🔧 FUNÇÕES BOT
-============================= */
-
-function isAllowedGroup(jid) {
-  if (!jid.endsWith("@g.us")) return true;
-  return (config.allowedGroups || []).includes(jid);
-}
-
-function unwrapMessage(message) {
-  if (!message) return null;
-  let m = message;
-
-  if (m.ephemeralMessage?.message) m = m.ephemeralMessage.message;
-  if (m.viewOnceMessage?.message) m = m.viewOnceMessage.message;
-  if (m.viewOnceMessageV2?.message) m = m.viewOnceMessageV2.message;
-
-  return m;
-}
-
-function extractText(msg) {
-  if (!msg?.message) return "";
-
-  const m = unwrapMessage(msg.message);
-  if (!m) return "";
-
-  const text =
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    "";
-
-  return (text || "").trim();
-}
-
-function isCommand(text) {
-  const t = (text || "").trim().toLowerCase();
-  return t.startsWith("@") || t.startsWith(".");
-}
-
-async function isGroupAdmin(sock, groupJid, senderJid) {
-  if (!groupJid.endsWith("@g.us")) return false;
-
-  const meta = await sock.groupMetadata(groupJid);
-  const found = meta.participants.find(p => p.id === senderJid);
-
-  return found?.admin === "admin" || found?.admin === "superadmin";
-}
-
-async function tryDeleteCommandMessage(sock, jid, msgKey) {
-  try {
-    await sock.sendMessage(jid, { delete: msgKey });
-  } catch {}
-}
-
-async function react(sock, msg, emoji) {
-  await sock.sendMessage(msg.key.remoteJid, {
-    react: {
-      text: emoji,
-      key: msg.key
-    }
-  });
-}
-
-function getSaudacao() {
-  const hora = new Date().getHours();
-
-  if (hora >= 5 && hora < 12) return "🌅 *Bom dia*";
-  if (hora >= 12 && hora < 18) return "☀️ *Boa tarde*";
-
-  return "🌙 *Boa noite*";
-}
-
-async function handleTodos(sock, jid) {
-
-  const meta = await sock.groupMetadata(jid);
-  const mentions = meta.participants.map(p => p.id);
-
-  const texto = `${getSaudacao()} 👋
-
-📣 *ATENÇÃO PESSOAL!*`;
-
-  await sock.sendMessage(jid, {
-    text: texto,
-    mentions
-  });
-}
-
-/* =============================
-   🚀 START BOT
+   WHATSAPP
 ============================= */
 
 async function startBot() {
 
-  console.log("🚀 Iniciando TopBot...");
+  log("🚀 Iniciando TopBot");
 
-  const { state, saveCreds } = await useMultiFileAuthState("./auth");
-  const { version } = await fetchLatestBaileysVersion();
+  const { state, saveCreds } =
+    await useMultiFileAuthState("./auth");
 
-  const sock = makeWASocket({
+  const { version } =
+    await fetchLatestBaileysVersion();
+
+  sock = makeWASocket({
+
     logger,
     version,
+
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger)
+      keys: makeCacheableSignalKeyStore(
+        state.keys,
+        logger
+      )
     },
+
     browser: ["TopBot", "Chrome", "1.0"]
+
   });
 
   sock.ev.on("connection.update", async (update) => {
 
-    const { connection, qr, lastDisconnect } = update;
+    const { connection, qr } = update;
 
     if (qr) {
-      console.log("\n📱 QR CODE GERADO\n");
 
-      const qrBase64 = await QRCode.toDataURL(qr);
+      const base = await QRCode.toDataURL(qr);
 
-      console.log(qrBase64);
-      console.log("\nCole em: https://base64.guru/converter/decode/image\n");
+      console.log(base);
+
     }
 
     if (connection === "open") {
 
-      console.log("✅ BOT CONECTADO");
-      console.log("🆔 Meu ID:", sock.user.id);
+      BOT.connected = true;
+
+      log("✅ BOT CONECTADO");
+
+      const groups =
+        await sock.groupFetchAllParticipating();
+
+      BOT.groups = Object.values(groups);
+
+      await recoverTasks();
 
       setupScheduler(sock);
 
-      console.log("🚀 Bot pronto!");
-
-    }
-
-    if (connection === "close") {
-
-      const reason = lastDisconnect?.error?.output?.statusCode;
-
-      console.log("⚠️ Conexão fechada:", reason);
-
-      if (reason !== DisconnectReason.loggedOut) {
-
-        console.log("🔄 Reconectando...");
-        setTimeout(startBot, 5000);
-
-      } else {
-
-        console.log("❌ Sessão expirada delete /auth");
-
-      }
+      log("🚀 Bot pronto");
 
     }
 
@@ -212,64 +417,6 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("messages.upsert", async (m) => {
-
-    const msg = m.messages?.[0];
-
-    if (!msg) return;
-    if (msg.key?.fromMe) return;
-    if (!msg.message) return;
-
-    const jid = msg.key.remoteJid;
-    const isGroup = jid.endsWith("@g.us");
-    const sender = msg.key.participant || jid;
-
-    if (!isAllowedGroup(jid)) return;
-
-    const text = extractText(msg);
-    const cmd = text.toLowerCase();
-
-    console.log("📩", jid, text);
-
-    if (cmd === "@tabela") {
-      await react(sock, msg, "✅");
-      await handleTabela(sock, jid, { pauseMs: 4000 });
-      return;
-    }
-
-    if (cmd === "@pagamento" || cmd === "@p") {
-      await react(sock, msg, "✅");
-      await handlePagamento(sock, jid);
-      return;
-    }
-
-    if (isGroup && isCommand(text)) {
-
-      const admin = await isGroupAdmin(sock, jid, sender);
-
-      if (!admin) return;
-
-      await tryDeleteCommandMessage(sock, jid, msg.key);
-
-      if (cmd === "@todos") {
-        await handleTodos(sock, jid);
-        return;
-      }
-
-      if (cmd === "@abrir") {
-        await setGroupOpenClose(sock, jid, true);
-        return;
-      }
-
-      if (cmd === "@fechar") {
-        await setGroupOpenClose(sock, jid, false);
-        return;
-      }
-
-    }
-
-  });
-
 }
 
-startBot().catch(err => console.log(err));
+startBot();
