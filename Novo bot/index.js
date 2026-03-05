@@ -28,6 +28,14 @@ const logger = P({ level:"silent" });
 let sock;
 
 /* ==============================
+UTIL
+============================== */
+
+function delay(ms){
+return new Promise(res=>setTimeout(res,ms))
+}
+
+/* ==============================
 STATUS BOT
 ============================== */
 
@@ -54,11 +62,9 @@ HORA MAPUTO
 ============================== */
 
 function mozNow(){
-
 return new Date(
 new Date().toLocaleString("en-US",{timeZone:"Africa/Maputo"})
 );
-
 }
 
 /* ==============================
@@ -81,9 +87,7 @@ return JSON.parse(fs.readFileSync(STATE_PATH));
 }
 
 function saveState(data){
-
 fs.writeFileSync(STATE_PATH,JSON.stringify(data,null,2));
-
 }
 
 /* ==============================
@@ -100,32 +104,46 @@ const TASKS=[
 ];
 
 function minutes(t){
-
 const[h,m]=t.split(":").map(Number);
 return h*60+m;
-
 }
 
 /* ==============================
-EXECUTAR TAREFA
+EXECUTAR TAREFA COM INTERVALO
 ============================== */
 
 async function executeTask(name){
 
 for(const jid of config.autoPostGroups){
 
-if(name==="abrir")
-await setGroupOpenClose(sock,jid,true);
+try{
 
-if(name==="fechar")
-await setGroupOpenClose(sock,jid,false);
+log(`➡️ Executando ${name} no grupo ${jid}`)
 
-if(name.startsWith("tabela"))
-await handleTabela(sock,jid);
+if(name==="abrir"){
+await setGroupOpenClose(sock,jid,true)
+}
+
+if(name==="fechar"){
+await setGroupOpenClose(sock,jid,false)
+}
+
+if(name.startsWith("tabela")){
+await handleTabela(sock,jid)
+}
+
+/* intervalo entre grupos */
+await delay(4000)
+
+}catch(e){
+
+log("Erro tarefa "+name+" -> "+e.message)
 
 }
 
-log("Executou tarefa "+name);
+}
+
+log("✅ Executou tarefa "+name)
 
 }
 
@@ -135,46 +153,49 @@ RECOVER
 
 async function recoverTasks(){
 
-const now=mozNow();
-const current=now.getHours()*60+now.getMinutes();
+const now=mozNow()
+const current=now.getHours()*60+now.getMinutes()
 
-let state=loadState();
+let state=loadState()
 
-const today=now.toISOString().slice(0,10);
+const today=now.toISOString().slice(0,10)
 
 if(state.date!==today){
 
-state={date:today,executed:[]};
-saveState(state);
+state={date:today,executed:[]}
+saveState(state)
 
 }
 
-let faltam=[];
+let faltam=[]
 
 for(const t of TASKS){
 
 if(minutes(t.time)<=current && !state.executed.includes(t.name)){
 
-log("⚡ Recuperando tarefa "+t.name);
+log("⚡ Recuperando tarefa "+t.name)
 
-await executeTask(t.name);
+await executeTask(t.name)
 
-state.executed.push(t.name);
+/* intervalo entre tarefas */
+await delay(5000)
 
-saveState(state);
+state.executed.push(t.name)
+
+saveState(state)
 
 }
 else if(!state.executed.includes(t.name)){
-faltam.push(t);
+faltam.push(t)
 }
 
 }
 
-log(`🕒 ${faltam.length} tarefas faltam hoje`);
+log(`🕒 ${faltam.length} tarefas faltam hoje`)
 
 faltam.forEach(t=>{
-log(`⏳ ${t.name} às ${t.time}`);
-});
+log(`⏳ ${t.name} às ${t.time}`)
+})
 
 }
 
@@ -182,8 +203,8 @@ log(`⏳ ${t.name} às ${t.time}`);
 WEB SERVER
 ============================== */
 
-const app=express();
-app.use(express.json());
+const app=express()
+app.use(express.json())
 
 app.get("/",(req,res)=>{
 
@@ -194,17 +215,17 @@ Status: ${BOT.connected?"ONLINE":"OFFLINE"}
 Grupos: ${BOT.groups.length}
 <br><br>
 <a href="/ping">Ping</a>
-`);
+`)
 
-});
+})
 
-app.get("/ping",(req,res)=>res.send("pong"));
+app.get("/ping",(req,res)=>res.send("pong"))
 
-const PORT=process.env.PORT||3000;
+const PORT=process.env.PORT||3000
 
 app.listen(PORT,()=>{
-log("🌐 WebServer ativo "+PORT);
-});
+log("🌐 WebServer ativo "+PORT)
+})
 
 /* ==============================
 KEEP ALIVE
@@ -214,12 +235,12 @@ setInterval(async()=>{
 
 try{
 
-const url=process.env.RENDER_EXTERNAL_URL||`http://localhost:${PORT}`;
-await axios.get(url);
+const url=process.env.RENDER_EXTERNAL_URL||`http://localhost:${PORT}`
+await axios.get(url)
 
 }catch{}
 
-},240000);
+},240000)
 
 /* ==============================
 BOT
@@ -227,11 +248,11 @@ BOT
 
 async function startBot(){
 
-log("🚀 Iniciando TopBot");
+log("🚀 Iniciando TopBot")
 
-const{state,saveCreds}=await useMultiFileAuthState("./auth");
+const{state,saveCreds}=await useMultiFileAuthState("./auth")
 
-const{version}=await fetchLatestBaileysVersion();
+const{version}=await fetchLatestBaileysVersion()
 
 sock=makeWASocket({
 
@@ -245,67 +266,67 @@ keys:makeCacheableSignalKeyStore(state.keys,logger)
 
 browser:["TopBot","Chrome","1.0"]
 
-});
+})
 
 /* conexão */
 
 sock.ev.on("connection.update",async(update)=>{
 
-const{connection,lastDisconnect,qr}=update;
+const{connection,lastDisconnect,qr}=update
 
 if(qr){
 
-console.log("\n📱 QR CODE GERADO\n");
+console.log("\n📱 QR CODE GERADO\n")
 
-const qrBase64=await QRCode.toDataURL(qr);
-console.log(qrBase64);
+const qrBase64=await QRCode.toDataURL(qr)
+console.log(qrBase64)
 
 }
 
 if(connection==="open"){
 
-BOT.connected=true;
+BOT.connected=true
 
-log("✅ BOT CONECTADO");
+log("✅ BOT CONECTADO")
 
-const groups=await sock.groupFetchAllParticipating();
-BOT.groups=Object.values(groups);
+const groups=await sock.groupFetchAllParticipating()
+BOT.groups=Object.values(groups)
 
-console.log(`\n📊 ${BOT.groups.length} grupos:\n`);
+console.log(`\n📊 ${BOT.groups.length} grupos:\n`)
 
 BOT.groups.forEach((g,i)=>{
-console.log(`${i+1}. ${g.subject}`);
-console.log(g.id);
-});
+console.log(`${i+1}. ${g.subject}`)
+console.log(g.id)
+})
 
-await recoverTasks();
+await recoverTasks()
 
-setupScheduler(sock);
+setupScheduler(sock)
 
-log("🚀 Bot pronto");
+log("🚀 Bot pronto")
 
 }
 
 if(connection==="close"){
 
-const reason=lastDisconnect?.error?.output?.statusCode;
+const reason=lastDisconnect?.error?.output?.statusCode
 
-log("⚠️ Conexão fechada "+reason);
+log("⚠️ Conexão fechada "+reason)
 
 if(reason!==DisconnectReason.loggedOut){
 
-log("🔄 reconectando...");
-setTimeout(startBot,5000);
+log("🔄 reconectando...")
+setTimeout(startBot,5000)
 
 }else{
 
-log("❌ sessão expirada delete /auth");
+log("❌ sessão expirada delete /auth")
 
 }
 
 }
 
-});
+})
 
 /* ==============================
 LER MENSAGENS
@@ -313,21 +334,21 @@ LER MENSAGENS
 
 sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
-if(type !== "notify") return;
+if(type !== "notify") return
 
-const msg = messages[0];
+const msg = messages[0]
 
-if(!msg.message) return;
-if(msg.key.fromMe) return;
+if(!msg.message) return
+if(msg.key.fromMe) return
 
-const jid = msg.key.remoteJid;
+const jid = msg.key.remoteJid
 
 const text =
 msg.message.conversation ||
 msg.message.extendedTextMessage?.text ||
-"";
+""
 
-log(`📩 ${jid} -> ${text}`);
+log(`📩 ${jid} -> ${text}`)
 
 try{
 
@@ -340,7 +361,7 @@ const comandos=[
 ".p",
 "@abrir",
 "@fechar"
-];
+]
 
 if(comandos.some(c=>text.startsWith(c))){
 
@@ -348,7 +369,7 @@ if(jid.endsWith("@g.us")){
 
 await sock.sendMessage(jid,{
 delete: msg.key
-});
+})
 
 }
 
@@ -357,41 +378,39 @@ delete: msg.key
 /* comandos */
 
 if(text === "@teste"){
-await sock.sendMessage(jid,{text:"✅ Bot funcionando"});
+await sock.sendMessage(jid,{text:"✅ Bot funcionando"})
 }
 
 else if(text === "@todos"){
-await handleTodos(sock,jid);
+await handleTodos(sock,jid)
 }
 
 else if(text.startsWith("@tabela") || text === ".t"){
-await handleTabela(sock,jid);
+await handleTabela(sock,jid)
 }
 
 else if(text.startsWith("@pagamento") || text === ".p"){
-await handlePagamento(sock,jid);
+await handlePagamento(sock,jid)
 }
 
 else if(text === "@abrir"){
-await setGroupOpenClose(sock,jid,true);
+await setGroupOpenClose(sock,jid,true)
 }
 
 else if(text === "@fechar"){
-await setGroupOpenClose(sock,jid,false);
+await setGroupOpenClose(sock,jid,false)
 }
 
 }catch(e){
 
-log("Erro comando "+e.message);
+log("Erro comando "+e.message)
 
 }
 
-});
+})
 
-/* salvar sessão */
-
-sock.ev.on("creds.update",saveCreds);
+sock.ev.on("creds.update",saveCreds)
 
 }
 
-startBot();
+startBot()
